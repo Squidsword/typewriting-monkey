@@ -1,0 +1,38 @@
+{
+  "name": "typewriting-monkey",
+  "version": "1.0.0",
+  "description": "Typewriting Monkey",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build-client": "npx tsc src/client/main.ts --outDir public --module es6 --target es6",
+    "watch-client": "tsc src/client/main.ts --outDir public --module es6 --target es6 --watch",
+    "serve": "live-server public --port=8080 --no-browser --watch=main.js,index.html"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Squidsword/typewriting-monkey.git"
+  },
+  "author": "Max Everest",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Squidsword/typewriting-monkey/issues"
+  },
+  "homepage": "https://github.com/Squidsword/typewriting-monkey#readme",
+  "dependencies": {
+    "express": "^5.1.0",
+    "seedrandom": "^3.0.5",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.1",
+    "@types/node": "^22.15.3",
+    "@types/seedrandom": "^3.0.8",
+    "@types/socket.io": "^3.0.1",
+    "@types/socket.io-client": "^1.4.36",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3",
+    "undici-types": "^7.8.0"
+  }
+}
