@@ -1,4 +1,4 @@
-// src/index.ts
+// src/app.ts
 import express from 'express'
 import { createServer } from 'http'
 import { Server } from 'socket.io'
@@ -30,5 +30,5 @@ setInterval(() => {
   io.emit('monkey-type', monkey.next())
 }, 100)
 
-const port = process.env.PORT || 8080
+const port = process.env.PORT || 5500
 httpServer.listen(port, () => console.log(`Server running on port ${port}`))
