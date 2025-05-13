@@ -1,24 +1,33 @@
 :root {
-    --bg: #222831;
-    --fg: #DFD0B8;
-    --accent: #4dabff;
+    --bg:#222831;
+    --fg:#DFD0B8;
+    --accent:#4dabff;
 }
 
-@media (prefers-color-scheme: dark){
-    :root{
-        --bg: #222831;
-        --fg: #DFD0B8;
-        --accent: #4dabff;
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg:#222831;
+        --fg:#DFD0B8;
+        --accent:#4dabff;
     }
 }
-  
+
 html, body {
-    background: var(--bg);
-    color: var(--fg);
+    background:var(--bg);
+    color:var(--fg);
 }
 
 #output {
-    white-space: pre-wrap;
-    word-break: break-all;
+    white-space:pre-wrap;
+    word-break:break-all;
 }
-  
+
+.word {
+    margin:0 0.35ch;
+}
+.word.len3 { color:#ff6b6b; }
+.word.len4 { color:#ffa94d; }
+.word.len5 { color:#ffd43b; }
+.word.len6 { color:#69db7c; }
+.word.len7 { color:#4dabff; }
+.word.len8 { color:#b197fc; }
