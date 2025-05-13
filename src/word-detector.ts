@@ -30,7 +30,7 @@ export class WordDetector extends EventEmitter {
     for (let n = Math.min(MAX_LEN, this.window.length); n >= MIN_LEN; n--){
       const slice = this.window.slice(-n)
       if (WORDS.has(slice)){
-        this.emit("word",{start:this.cursor - n, len:n} as WordHit)
+        this.emit("word",{start:this.cursor - n + 1, len:n} as WordHit)
         break
       }
     }
