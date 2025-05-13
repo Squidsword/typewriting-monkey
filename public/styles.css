@@ -1,0 +1,24 @@
+:root {
+    --bg: #222831;
+    --fg: #DFD0B8;
+    --accent: #4dabff;
+}
+
+@media (prefers-color-scheme: dark){
+    :root{
+        --bg: #222831;
+        --fg: #DFD0B8;
+        --accent: #4dabff;
+    }
+}
+  
+html, body {
+    background: var(--bg);
+    color: var(--fg);
+}
+
+#output {
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+  

@@ -47,3 +47,5 @@ Thumbs.db
 # Ignore compiled JS alongside TS sources
 *.js
 *.js.map
+
+all_files_dump.txt
