@@ -9,6 +9,7 @@ const WORDS    = new Set(
     .split(/\r?\n/)
     .filter(w => w.length >= MIN_LEN)          // ignore short entries
 )
+
 const MAX_LEN  = Math.max(...Array.from(WORDS, w => w.length))
 
 export interface WordHit { start:number; len:number }

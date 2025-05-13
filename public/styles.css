@@ -25,9 +25,9 @@ html, body {
 .word {
     margin:0 0.35ch;
 }
-.word.len3 { color:#ff6b6b; }
-.word.len4 { color:#ffa94d; }
-.word.len5 { color:#ffd43b; }
-.word.len6 { color:#69db7c; }
-.word.len7 { color:#4dabff; }
-.word.len8 { color:#b197fc; }
+.word.len3 { color:hsl(37, 38%, 64%); }
+.word.len4 { color:hsl(357, 38%, 64%); }
+.word.len5 { color:hsl(317, 38%, 64%); }
+.word.len6 { color:hsl(277, 38%, 64%); }
+.word.len7 { color:hsl(237, 38%, 64%)}
+.word.len8 { color:hsl(197, 38%, 64%) }
