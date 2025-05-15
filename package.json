@@ -8,7 +8,7 @@
     "watch:server": "nodemon --watch src --ext ts --exec ts-node src/app.ts",
     "dev": "npm-run-all -p watch:client watch:server watch:export",
     "build": "esbuild src/client/main.ts --bundle --minify --format=esm --outdir=public",
-    "export": "find . \\( -path ./node_modules -o -path ./.git -o -path ./dist -o -path ./build \\) -prune -false -o -type f ! -name \"*.js\" ! -name \"words.txt\" ! -name \"package-lock.json\" ! -name \".DS_Store\" ! -name \"all_files_dump.txt\" -exec printf \"\\n===== %s =====\\n\" {} \\; -exec sed 's/^/    /' {} \\; > all_files_dump.txt",
+    "export": "node scripts/export.js",
     "watch:export": "nodemon --watch src --watch . --ext ts,tsx,json --exec \"npm run export\"",
     "debug:server": "nodemon --inspect=9229 --watch src --ext ts --exec node -r ts-node/register src/app.ts"
   },
