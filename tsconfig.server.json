@@ -1,0 +1,17 @@
+{
+    "compilerOptions": {
+      "target": "ES2022",
+      "lib": ["ES2022"],
+      "outDir": "./dist/server",
+  
+      "module": "CommonJS",
+      "moduleResolution": "node",          // ⬅️ overrides “bundler”
+      "allowImportingTsExtensions": false, // ⬅️ turn it off
+  
+      "esModuleInterop": true,
+      "strict": true,
+      "skipLibCheck": true
+    },
+    "include": ["src/server"]
+  }
+  

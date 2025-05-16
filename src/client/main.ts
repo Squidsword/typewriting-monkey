@@ -1,96 +1,120 @@
-import io from "socket.io-client"
+/**
+ * Browser-side entry point.
+ * - Opens a Socket.IO connection to receive live characters + word hits
+ * - Fetches missing historical chunks on demand via `/chars`
+ * - Renders the ever-growing text, highlighting discovered words
+ */
 
-interface MonkeyEvt { index:number; ch:string }
-interface WordHit   { start:number; len:number }
+import io from 'socket.io-client';
+import './styles.css';
 
-const PAGE_SIZE = 512
-const pages:Record<number,string> = {}
-const hits:WordHit[] = []
+// ---------------------------------------------------------------------------
+// Type helpers mirroring server events
+// ---------------------------------------------------------------------------
+interface MonkeyEvt { index: number; ch: string }
+interface WordHit   { start: number; len: number }
 
-let cursor = 0
-const output = document.getElementById("output") as HTMLPreElement
+// Tunables — must match server values ---------------------------------------
+const CHUNK = 8192;
 
-/* ---------- helpers ---------- */
+// Client-side cache ----------------------------------------------------------
+const chunks: Record<number, string> = {}; // chunkId → text
+const hits:   WordHit[] = [];             // all word hits seen so far
+let   cursor  = 0;                        // next global char index
 
-const fetchPage = async (idx:number) => {
-  if (pages[idx] !== undefined) return
-  const r = await fetch(`/page/${idx}`)
-  if (r.ok) pages[idx] = await r.text()
-}
+const out = document.getElementById('output') as HTMLPreElement;
 
-const visibleText = ():string => {
-  const last = Math.floor(cursor / PAGE_SIZE)
-  const limit = cursor % PAGE_SIZE
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+/** Lazy-load a chunk only once. */
+const getChunk = async (id: number) => {
+  if (chunks[id] !== undefined) return;
 
-  return Array.from({length:last+1}, (_,i)=>i)
-    .map(i=>{
-      const pg = pages[i] ?? ""
-      return i===last ? pg.slice(0,limit) : pg
-    })
-    .join("")
-}
+  const r = await fetch(`/chars?start=${id * CHUNK}&len=${CHUNK}`);
+  if (r.ok) chunks[id] = await r.text();
+};
 
-/* remove overlaps, longest word wins */
-const pruneHits = (xs:WordHit[]):WordHit[] => {
-  const sorted = [...xs].sort((a,b)=>a.start-b.start || b.len-a.len*-1)
-  const out:WordHit[] = []
-  for (const h of sorted){
-    const prev = out[out.length-1]
-    if (!prev || h.start >= prev.start+prev.len){
-      out.push(h)
-    } else if (h.len > prev.len){
-      out[out.length-1] = h            // replace shorter overlapping word
-    }
+/** Concatenate cached chunks up to (but not including) `cursor`. */
+const fullText = (): string => {
+  const lastChunk = Math.floor(cursor / CHUNK);
+
+  let result = '';
+  for (let i = 0; i <= lastChunk; i++) {
+    const data = chunks[i] ?? '';
+    result += i === lastChunk ? data.slice(0, cursor % CHUNK) : data;
   }
-  return out
-}
+  return result;
+};
 
-/* build HTML with <span class="word">…</span> around hits */
+/**
+ * Deduplicate overlapping WordHits (prefer longer ones when nested).
+ * Returns a list sorted by ascending `start`.
+ */
+const nonOverlappingHits = (raw: WordHit[]): WordHit[] => {
+  const sorted = [...raw].sort((a, b) => a.start - b.start || b.len - a.len);
+  const output: WordHit[] = [];
+
+  sorted.forEach(hit => {
+    const last = output.at(-1);
+    if (!last || hit.start >= last.start + last.len) output.push(hit);
+  });
+  return output;
+};
+
+/** Render the current text + word highlights into the <pre>. */
 const render = () => {
-  const txt  = visibleText()
-  const nonOverlap = pruneHits(hits.filter(h=>h.start < txt.length))
+  const t = fullText();
+  const visibleWords = nonOverlappingHits(hits.filter(h => h.start < t.length));
 
-  let html = ""
-  let pos  = 0
-  for (const h of nonOverlap){
-    html += txt.slice(pos, h.start)
-    html += `<span class="word len${h.len}">${txt.slice(h.start, h.start+h.len)}</span>`
-    pos    = h.start + h.len
-  }
-  html += txt.slice(pos)
-  output.innerHTML = html
-}
+  let html = '';
+  let ptr  = 0;
 
-/* ---------- socket wiring ---------- */
+  visibleWords.forEach(h => {
+    html += t.slice(ptr, h.start);                        // plain segment
+    html += `<span class="word len${h.len}">${t.slice(    // highlighted word
+             h.start, h.start + h.len)}</span>`;
+    ptr = h.start + h.len;
+  });
+  html += t.slice(ptr);                                   // tail segment
+  out.innerHTML = html;
+};
 
-;(async () => {
-  const socket = io()
+// ---------------------------------------------------------------------------
+// Live wiring
+// ---------------------------------------------------------------------------
+(async () => {
+  const sock = io();
 
-  socket.on("cursor", async (cur:number)=>{
-    cursor = cur
-    const max = Math.floor(cursor / PAGE_SIZE)
-    for (let i=0;i<=max;i++) await fetchPage(i)
-    render()
-  })
+  /* Grab previously typed characters */
+  sock.on('cursor', async (c: number) => {
+    cursor = c;
+    const last = Math.floor(cursor / CHUNK);
+    for (let id = 0; id <= last; id++) await getChunk(id);
 
-  socket.on("init-words",(arr:WordHit[])=>{
-    hits.push(...arr)
-    render()
-  })
+    render();
+  });
 
-  socket.on("word",(hit:WordHit)=>{
-    hits.push(hit)
-    render()
-  })
+  /* Grab previously detected characters */
+  sock.on('init-words', (initial: WordHit[]) => {
+    hits.push(...initial);
+    render();
+  });
 
-  socket.on("monkey-type", async ({index,ch}:MonkeyEvt)=>{
-    const page = Math.floor(index / PAGE_SIZE)
-    if (pages[page] === undefined) await fetchPage(page)
+  /* Grab and store new word hits {location, length} from server */
+  sock.on('word', (hit: WordHit) => {
+    hits.push(hit);
+    render();
+  });
 
-    const off = index % PAGE_SIZE
-    pages[page] = pages[page].slice(0,off) + ch + pages[page].slice(off+1)
+  /* Register freshly typed character */
+  sock.on('monkey-type', async ({ index, ch }: MonkeyEvt) => {
+    const id  = Math.floor(index / CHUNK);
+    await getChunk(id);
 
-    cursor = index + 1
-    render()
-  })
-})()
+    chunks[id] += ch // Append character to most recent chunk
+    cursor = index + 1;
+
+    render();
+  });
+})();
