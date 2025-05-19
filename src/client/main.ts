@@ -1,120 +1,156 @@
 /**
- * Browser-side entry point.
- * - Opens a Socket.IO connection to receive live characters + word hits
- * - Fetches missing historical chunks on demand via `/chars`
- * - Renders the ever-growing text, highlighting discovered words
+ * Browser-side entry point (v2)
+ * - Live characters via Socket.IO   → event: "char"
+ * - Historical slices via GET /v1/chars
+ * - Word hits via "word"
+ * - Stats (users / speed) via polling /v1/stats
  */
 
 import io from 'socket.io-client';
 import './styles.css';
 
 // ---------------------------------------------------------------------------
-// Type helpers mirroring server events
+// Types mirrored from server DTOs
 // ---------------------------------------------------------------------------
-interface MonkeyEvt { index: number; ch: string }
+interface CharEvt   { index: number; ch: string }
 interface WordHit   { start: number; len: number }
+interface StatsJSON { users: number; charsPerMinute: number }
 
-// Tunables — must match server values ---------------------------------------
-const CHUNK = 8192;
+// ---------------------------------------------------------------------------
+// Tunables — must match server values
+// ---------------------------------------------------------------------------
+const CHUNK = 8_192;
+const STATS_POLL_MS = 5_000;
 
-// Client-side cache ----------------------------------------------------------
+// ---------------------------------------------------------------------------
+// DOM handles
+// ---------------------------------------------------------------------------
+const out   = document.getElementById('output') as HTMLPreElement;
+const stats = (() => {
+  let el = document.getElementById('stats') as HTMLDivElement | null;
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'stats';
+    el.style.margin = '0 0 .5rem';
+    document.body.insertBefore(el, out);
+  }
+  return el;
+})();
+
+// ---------------------------------------------------------------------------
+// Client-side caches
+// ---------------------------------------------------------------------------
 const chunks: Record<number, string> = {}; // chunkId → text
-const hits:   WordHit[] = [];             // all word hits seen so far
-let   cursor  = 0;                        // next global char index
-
-const out = document.getElementById('output') as HTMLPreElement;
+const hits:   WordHit[] = [];
+let   cursor  = 0;                          // index of *next* char
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-/** Lazy-load a chunk only once. */
 const getChunk = async (id: number) => {
   if (chunks[id] !== undefined) return;
-
-  const r = await fetch(`/chars?start=${id * CHUNK}&len=${CHUNK}`);
+  const r = await fetch(`/v1/chars?start=${id * CHUNK}&len=${CHUNK}`);
   if (r.ok) chunks[id] = await r.text();
 };
 
-/** Concatenate cached chunks up to (but not including) `cursor`. */
 const fullText = (): string => {
-  const lastChunk = Math.floor(cursor / CHUNK);
-
-  let result = '';
-  for (let i = 0; i <= lastChunk; i++) {
+  const last = Math.floor(cursor / CHUNK);
+  let text = '';
+  for (let i = 0; i <= last; i++) {
     const data = chunks[i] ?? '';
-    result += i === lastChunk ? data.slice(0, cursor % CHUNK) : data;
+    text += i === last ? data.slice(0, cursor % CHUNK) : data;
   }
-  return result;
+  return text;
 };
 
-/**
- * Deduplicate overlapping WordHits (prefer longer ones when nested).
- * Returns a list sorted by ascending `start`.
- */
-const nonOverlappingHits = (raw: WordHit[]): WordHit[] => {
+const nonOverlappingHits = (raw: WordHit[]) => {
   const sorted = [...raw].sort((a, b) => a.start - b.start || b.len - a.len);
-  const output: WordHit[] = [];
-
-  sorted.forEach(hit => {
-    const last = output.at(-1);
-    if (!last || hit.start >= last.start + last.len) output.push(hit);
+  const res: WordHit[] = [];
+  sorted.forEach(h => {
+    const prev = res.at(-1);
+    if (!prev || h.start >= prev.start + prev.len) res.push(h);
   });
-  return output;
+  return res;
 };
 
-/** Render the current text + word highlights into the <pre>. */
 const render = () => {
   const t = fullText();
-  const visibleWords = nonOverlappingHits(hits.filter(h => h.start < t.length));
+  const visible = nonOverlappingHits(hits.filter(h => h.start < t.length));
 
   let html = '';
   let ptr  = 0;
-
-  visibleWords.forEach(h => {
-    html += t.slice(ptr, h.start);                        // plain segment
-    html += `<span class="word len${h.len}">${t.slice(    // highlighted word
-             h.start, h.start + h.len)}</span>`;
+  visible.forEach(h => {
+    html += t.slice(ptr, h.start);
+    html += `<span class="word len${h.len}">${t.slice(h.start, h.start + h.len)}</span>`;
     ptr = h.start + h.len;
   });
-  html += t.slice(ptr);                                   // tail segment
+  html += t.slice(ptr);
   out.innerHTML = html;
+};
+
+// ---------------------------------------------------------------------------
+// Stats polling
+// ---------------------------------------------------------------------------
+const updateStats = (s: StatsJSON) => {
+  stats.textContent = `${s.users} online · ${s.charsPerMinute} cpm`;
+};
+
+const pollStats = async () => {
+  try {
+    const r = await fetch('/v1/stats');
+    if (r.ok) updateStats(await r.json());
+  } finally {
+    setTimeout(pollStats, STATS_POLL_MS);
+  }
 };
 
 // ---------------------------------------------------------------------------
 // Live wiring
 // ---------------------------------------------------------------------------
 (async () => {
-  const sock = io();
+  pollStats();
 
-  /* Grab previously typed characters */
+  const sock = io({
+    path: '/ws',              // ← new WS path
+    transports: ['websocket']
+  });
+
+  /* Initial back-fill ----------------------------------------------- */
   sock.on('cursor', async (c: number) => {
     cursor = c;
     const last = Math.floor(cursor / CHUNK);
     for (let id = 0; id <= last; id++) await getChunk(id);
-
     render();
   });
 
-  /* Grab previously detected characters */
   sock.on('init-words', (initial: WordHit[]) => {
     hits.push(...initial);
     render();
   });
 
-  /* Grab and store new word hits {location, length} from server */
+  /* New word hits ---------------------------------------------------- */
   sock.on('word', (hit: WordHit) => {
     hits.push(hit);
     render();
   });
 
-  /* Register freshly typed character */
-  sock.on('monkey-type', async ({ index, ch }: MonkeyEvt) => {
-    const id  = Math.floor(index / CHUNK);
-    await getChunk(id);
+  /* Live characters -------------------------------------------------- */
+  sock.on('char', ({ index, ch }: CharEvt) => {
+    const id     = Math.floor(index / CHUNK);
+    const offset = index % CHUNK;
 
-    chunks[id] += ch // Append character to most recent chunk
+    if (chunks[id] === undefined) chunks[id] = '';
+
+    if (chunks[id].length === offset) {
+      chunks[id] += ch;
+    } else if (chunks[id].length < offset) {
+      // gap → resync
+      fetch(`/v1/chars?start=${id * CHUNK}&len=${CHUNK}`)
+        .then(r => r.text())
+        .then(txt => { chunks[id] = txt; render(); });
+      return;
+    }
     cursor = index + 1;
-
     render();
   });
 })();
