@@ -1,6 +1,6 @@
 import { EventEmitter } from "events";
 import * as prand from "pure-rand";
-import type { ChunkStore } from "./chunk-store";
+import type { ChunkStore } from "../storage/chunk-store";
 
 export interface MonkeyTick { index: number; ch: string; }
 
@@ -17,12 +17,12 @@ export class Monkey extends EventEmitter {
     this.store = store;
   }
 
-  /** Generate and persist one character, emitting a Tick event. */
-  next(): MonkeyTick {
+  /** Generate and persist one character, emitting an async Tick event. */
+  async next(): Promise<MonkeyTick> {
     const [letter, nextRng] = prand.uniformIntDistribution(0, 25, this.rng);
     this.rng = nextRng;
     const ch = String.fromCharCode(97 + letter);
-    const idx = this.store.append(ch);
+    const idx = await this.store.append(ch);
     const tick = { index: idx, ch } as const;
     this.emit("tick", tick);
     return tick;

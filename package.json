@@ -26,8 +26,11 @@
   "dependencies": {
     "compression": "^1.8.0",
     "express": "^5.1.0",
+    "firebase": "^11.8.1",
+    "firebase-admin": "^13.4.0",
     "helmet": "^8.1.0",
     "pure-rand": "^7.0.1",
+    "react-dom": "^19.1.0",
     "socket.io": "^4.8.1",
     "socket.io-client": "^4.8.1"
   },

@@ -10,7 +10,8 @@ import { createServer } from "node:http";
 import { Server as IOServer, Socket } from "socket.io";
 import path from "node:path";
 
-import { MemoryChunkStore, CHUNK_SIZE } from "./core/chunk-store";
+import { CHUNK_SIZE } from "./storage/chunk-store";
+import { MemoryChunkStore } from "./storage/memory-chunk-store";
 import { Monkey }           from "./core/monkey";
 import { WordDetector }     from "./core/word-detector";
 import { DICTIONARY_SIZE }  from "./core/word-detector";
@@ -72,14 +73,14 @@ router.get("/status", (_req, res) => {
 });
 
 // Random‑access chars
-router.get("/chars", (req, res) => {
+router.get("/chars", async (req, res) => {
   const start = Number(req.query.start);
   const len   = Number(req.query.len);
   if (!Number.isFinite(start) || !Number.isFinite(len) || start < 0 || len <= 0 || len > CHUNK_SIZE * 16) {
     res.status(400).json({ error: "Invalid range" });
     return;
   } 
-  res.type("text/plain").send(store.read(start, len));
+  res.type("text/plain").send(await store.readSlice(start, len));
 });
 
 // Lightweight stats endpoint for clients (users + speed) -------------------
@@ -113,14 +114,14 @@ io.on("connection", socket => {
 
 const STEP_MS = 1000 / 60;
 let carry = 0;
-setInterval(() => {
+setInterval(async () => {
   const cps = charsPerSecond();              // may be fractional
   carry += cps * (STEP_MS / 1000);
   const emitCnt = Math.floor(carry);
   carry -= emitCnt;
 
   for (let i = 0; i < emitCnt; i++) {
-    const tick = monkey.next();
+    const tick = await monkey.next();
     io.emit("char", tick);
   }
 }, STEP_MS);

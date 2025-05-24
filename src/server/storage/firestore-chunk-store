@@ -1,0 +1,116 @@
+import { db } from "./firebase";
+import { CHUNK_SIZE, ChunkStore } from "./chunk-store";
+
+/* ────────────────────────────────────────────────────────────── */
+/*  Firestore collection layout                                   */
+/*    chunks/                                                     */
+/*      ├─ cursor          { value: <number> }                    */
+/*      ├─ chunk_0         { text: "..." }                        */
+/*      ├─ chunk_1         { text: "..." }                        */
+/*      └─ …                                                     */
+/*                                                               */
+/*  Only COMPLETED chunks are stored; the hot buffer lives in RAM */
+/* ────────────────────────────────────────────────────────────── */
+
+const COL        = "chunks";
+const CURSOR_DOC = "cursor";
+
+/** Tiny (32-entry) LRU cache so repeated reads stay local & fast. */
+class LRUCache {
+  private map = new Map<number, string>();
+  constructor(private readonly max = 32) {}
+
+  get(id: number) { return this.map.get(id); }
+  set(id: number, text: string) {
+    if (this.map.has(id)) this.map.delete(id);   // bump to front
+    this.map.set(id, text);
+    if (this.map.size > this.max) {
+      const oldest = this.map.keys().next().value;
+      this.map.delete(oldest);
+    }
+  }
+}
+
+/* ────────────────────────────────────────────────────────────── */
+
+export class FirestoreChunkStore implements ChunkStore {
+  private hot = "";
+  private hotId = 0;
+  private _cursor = 0;
+
+  /** finished-chunk cache */
+  private cache = new LRUCache();
+
+  get cursor() { return this._cursor; }
+
+  /* ---------- factory: make sure we know where we left off ----- */
+  static async create(): Promise<FirestoreChunkStore> {
+    const self = new FirestoreChunkStore();
+    const snap = await db.collection(COL).doc(CURSOR_DOC).get();
+
+    self._cursor = snap.exists ? (snap.data()!.value as number) : 0;
+    self.hotId   = Math.floor(self._cursor / CHUNK_SIZE);
+    return self;
+  }
+
+  /* ---------- writes ------------------------------------------ */
+
+  async append(ch: string): Promise<number> {
+    const idx = this._cursor++;
+    this.hot += ch;
+
+    // Update the cursor doc every char (cheap single-field merge).
+    db.collection(COL).doc(CURSOR_DOC)
+      .set({ value: this._cursor }, { merge: true })
+      .catch(console.error);
+
+    if (this.hot.length === CHUNK_SIZE) await this.flush();
+    return idx;
+  }
+
+  async flush(): Promise<void> {
+    if (this.hot.length !== CHUNK_SIZE) return;
+
+    const id  = this.hotId;
+    const ref = db.collection(COL).doc(`chunk_${id}`);
+    await ref.set({ text: this.hot });        // 1 write / chunk
+
+    this.cache.set(id, this.hot);             // warm cache
+    this.hotId += 1;
+    this.hot = "";
+  }
+
+  /* ---------- reads ------------------------------------------- */
+
+  /** Get the FULL text of chunk `id` (awaits Firestore on cache miss). */
+  async readChunk(id: number): Promise<string> {
+    if (id === this.hotId) return this.hot;            // hot buffer
+
+    const cached = this.cache.get(id);
+    if (cached !== undefined) return cached;
+
+    // Not cached → fetch from Firestore (≈ 20 reads/s free quota)
+    const snap = await db.collection(COL).doc(`chunk_${id}`).get();
+    const text = snap.exists ? (snap.data()!.text as string) : "";
+    this.cache.set(id, text);
+    return text;
+  }
+
+  /** Arbitrary slice.  Max 17 chunks because len ≤ 8 KiB × 16. */
+  async readSlice(start: number, len: number): Promise<string> {
+    if (len <= 0) return "";
+
+    const first = Math.floor(start / CHUNK_SIZE);
+    const last  = Math.floor((start + len - 1) / CHUNK_SIZE);
+
+    let blob = "";
+    for (let id = first; id <= last; id++) {
+      blob += await this.readChunk(id);
+    }
+
+    const offset = start - first * CHUNK_SIZE;
+    return blob.slice(offset, offset + len);
+  }
+
+  chunkCount() { return this.hotId + (this.hot.length ? 1 : 0); }
+}
