@@ -12,6 +12,7 @@ import path from "node:path";
 
 import { CHUNK_SIZE } from "./storage/chunk-store";
 import { MemoryChunkStore } from "./storage/memory-chunk-store";
+import { FirestoreChunkStore } from "./storage/firestore-chunk-store";
 import { Monkey }           from "./core/monkey";
 import { WordDetector }     from "./core/word-detector";
 import { DICTIONARY_SIZE }  from "./core/word-detector";
@@ -23,7 +24,7 @@ const WS_PATH     = "/ws";      // Socket.IO path
 const TEST_MODE   = process.env.TEST_MODE !== "false"; // default «on» in dev
 
 // ────────────────  Instantiate domain objects  ────────────────────────────
-const store     = new MemoryChunkStore();
+const store     = new FirestoreChunkStore();
 const monkey    = new Monkey(store);
 const detector  = new WordDetector();
 const hits: ReturnType<typeof detector["emit"]>[] = [];
