@@ -43,8 +43,8 @@ class LRUCache {
 
 export class FirestoreChunkStore implements ChunkStore {
   /** Currently building chunk (lives only in RAM). */
-  private hot = "";
-  private hotId = 0;
+  private workingChunk = "";
+  private workingChunkId = 0;
   private _cursor = 0;
 
   /** finished‑chunk cache */
@@ -73,7 +73,24 @@ export class FirestoreChunkStore implements ChunkStore {
 
     const snap = await db.collection(META).doc(CURSOR).get();
     self._cursor = snap.exists ? (snap.data()!.index as number) : 0;
-    self.hotId = Math.floor(self._cursor / CHUNK_SIZE);
+    self.workingChunkId = Math.floor(self._cursor / CHUNK_SIZE);
+
+    const wipChunk = await db
+      .collection(CHUNKS)
+      .doc(`chunk_${self.workingChunkId}`)
+      .get();
+
+    if (wipChunk.exists) {
+      self.workingChunk = wipChunk.data()!.text as string;
+ 
+      // If the chunk was already full we “roll forward” so the next
+      // write starts a new one.
+      if (self.workingChunk.length === CHUNK_SIZE) {
+        self.cache.set(self.workingChunkId, self.workingChunk);
+        self.workingChunkId += 1;
+        self.workingChunk = "";
+      }
+    }
 
     return self;
   }
@@ -83,54 +100,65 @@ export class FirestoreChunkStore implements ChunkStore {
   /** Append a single character and return its global index. */
   async append(ch: string): Promise<number> {
     const idx = this._cursor++;
-    this.hot += ch;
+    this.workingChunk += ch;
 
     // Mark the cursor as dirty; the background timer will persist it.
     this.cursorDirty = true;
 
-    if (this.hot.length === CHUNK_SIZE) await this.flush();
+    if (this.workingChunk.length === CHUNK_SIZE) await this.flush();
     return idx;
   }
 
-  /** Persist the current cursor **only** if it changed. */
+  /** Persist the current cursor and working chunk */
   private async flushCursor(): Promise<void> {
     if (!this.cursorDirty) return; // nothing to do
 
-    await db
+    const batch = db.batch();
+
+    const chunkRef = db
+      .collection(CHUNKS)
+      .doc(`chunk_${this.workingChunkId}`);
+
+    batch.set(chunkRef, { text: this.workingChunk });
+
+    const cursorRef = db
       .collection(META)
-      .doc(CURSOR)
-      .set({ index: this._cursor }, { merge: true });
+      .doc(CURSOR);
+
+    batch.set(cursorRef, { index: this._cursor})
+
+    await batch.commit();
 
     this.cursorDirty = false;
   }
 
   /** Flush when a chunk fills up – this writes both chunk & cursor. */
   async flush(): Promise<void> {
-    if (this.hot.length !== CHUNK_SIZE) return; // still building
+    if (this.workingChunk.length !== CHUNK_SIZE) return; // still building
 
-    const id = this.hotId;
+    const id = this.workingChunkId;
     const ref = db.collection(CHUNKS).doc(`chunk_${id}`);
     const cur = db.collection(META).doc(CURSOR);
 
     const batch = db.batch();
-    batch.set(ref, { text: this.hot });
+    batch.set(ref, { text: this.workingChunk });
     batch.set(cur, { index: this._cursor }, { merge: true });
 
     await batch.commit();
 
     // After a successful commit the cursor is now in‑sync.
     this.cursorDirty = false;
-    this.cache.set(id, this.hot); // warm cache for recent chunk
+    this.cache.set(id, this.workingChunk); // warm cache for recent chunk
 
-    this.hotId += 1;
-    this.hot = "";
+    this.workingChunkId += 1;
+    this.workingChunk = "";
   }
 
   /* ---------- reads ------------------------------------------- */
 
   /** Get the FULL text of chunk `id` (awaits Firestore on cache miss). */
   async readChunk(id: number): Promise<string> {
-    if (id === this.hotId) return this.hot; // hot buffer
+    if (id === this.workingChunkId) return this.workingChunk; // hot buffer
 
     const cached = this.cache.get(id);
     if (cached !== undefined) return cached;
@@ -159,7 +187,7 @@ export class FirestoreChunkStore implements ChunkStore {
   }
 
   chunkCount() {
-    return this.hotId + (this.hot.length ? 1 : 0);
+    return this.workingChunkId + (this.workingChunk.length ? 1 : 0);
   }
 
   /* ---------- cleanup ----------------------------------------- */

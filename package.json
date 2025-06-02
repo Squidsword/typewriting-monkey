@@ -6,7 +6,7 @@
   "scripts": {
     "dev:client": "vite",
     "dev:server": "tsx watch --tsconfig tsconfig.server.json src/server/app.ts",
-    "dev:export": "tsx watch scripts/export.js --watch . --ignore node_modules --ignore dist",
+    "dev:export": "tsx watch scripts/export.cjs --watch . --ignore node_modules --ignore dist",
     "dev": "concurrently -n client,server,export -c magenta,cyan,gray \"npm:dev:client\" \"npm:dev:server\" \"npm:dev:export\"",
     "build:client": "vite build",
     "build:server": "tsc -p tsconfig.server.json",
@@ -19,6 +19,7 @@
   },
   "author": "Max Everest",
   "license": "ISC",
+  "type": "module",
   "bugs": {
     "url": "https://github.com/Squidsword/typewriting-monkey/issues"
   },

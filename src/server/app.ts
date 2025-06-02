@@ -8,7 +8,9 @@ import compression from "compression";
 import cors from "cors";
 import { createServer } from "node:http";
 import { Server as IOServer, Socket } from "socket.io";
-import path from "node:path";
+import path, { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
 
 import { CHUNK_SIZE } from "./storage/chunk-store";
 import { MemoryChunkStore } from "./storage/memory-chunk-store";
@@ -17,6 +19,8 @@ import { Monkey }           from "./core/monkey";
 import { WordDetector }     from "./core/word-detector";
 import { DICTIONARY_SIZE }  from "./core/word-detector";
 
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
 // ────────────────  Runtime config (ENV‑driven)  ───────────────────────────
 const HTTP_PORT   = Number(process.env.HTTP_PORT ?? 5500);
 const REST_ROOT   = "/v1";      // versioned REST namespace
@@ -24,7 +28,7 @@ const WS_PATH     = "/ws";      // Socket.IO path
 const TEST_MODE   = process.env.TEST_MODE !== "false"; // default «on» in dev
 
 // ────────────────  Instantiate domain objects  ────────────────────────────
-const store     = new FirestoreChunkStore();
+const store     = await FirestoreChunkStore.create();
 const monkey    = new Monkey(store);
 const detector  = new WordDetector();
 const hits: ReturnType<typeof detector["emit"]>[] = [];

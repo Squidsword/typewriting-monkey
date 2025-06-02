@@ -4,7 +4,7 @@
       "lib": ["ES2022"],
       "outDir": "./dist/server",
   
-      "module": "CommonJS",
+      "module": "es2022",
       "moduleResolution": "node",          // ⬅️ overrides “bundler”
       "allowImportingTsExtensions": false, // ⬅️ turn it off
   

@@ -1,8 +1,11 @@
 import fs from "fs";
-import path from "path";
+import path, { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { EventEmitter } from "events";
 
 export interface WordHit { start: number; len: number; word: string; }
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const MIN_LEN = 3;
 const DICT_FILE = path.join(__dirname, "../../data/words.txt");
@@ -11,7 +14,7 @@ const WORDS = new Set(
     .split(/\r?\n/)
     .filter(w => w.length >= MIN_LEN)
 );
-const MAX_LEN = Math.max(...[...WORDS].map(w => w.length));
+const MAX_LEN = 12;
 
 export const DICTIONARY_SIZE = WORDS.size;
 

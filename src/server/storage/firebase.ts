@@ -1,6 +1,6 @@
 import admin from "firebase-admin";
 import serviceAccount
-  from "./typewriting-monkey-firebase-adminsdk-fbsvc-0e770351ec.json";
+  from "./typewriting-monkey-firebase-admin.json";
 
 if (!admin.apps.length) {
   admin.initializeApp({
