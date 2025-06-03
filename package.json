@@ -6,7 +6,7 @@
   "scripts": {
     "dev:client": "vite",
     "dev:server": "tsx watch --tsconfig tsconfig.server.json src/server/app.ts",
-    "dev:export": "tsx watch scripts/export.cjs --watch . --ignore node_modules --ignore dist",
+    "dev:export": "nodemon --watch src --watch . --ignore node_modules --ignore dist --ignore all_files_dump.txt --ext ts,tsx,js,jsx,json,md,html,css --exec \"node scripts/export.cjs\"",
     "dev": "concurrently -n client,server,export -c magenta,cyan,gray \"npm:dev:client\" \"npm:dev:server\" \"npm:dev:export\"",
     "build:client": "vite build",
     "build:server": "tsc -p tsconfig.server.json",
@@ -45,6 +45,7 @@
     "@vitejs/plugin-react": "^4.0.0",
     "concurrently": "^9.1.2",
     "minimatch": "^10.0.1",
+    "nodemon": "^3.1.10",
     "tsx": "^4.19.4",
     "typescript": "^5.8.3",
     "vite": "^5.0.0"
