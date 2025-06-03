@@ -18,6 +18,8 @@ import { FirestoreChunkStore } from "./storage/firestore-chunk-store";
 import { Monkey }           from "./core/monkey";
 import { WordDetector }     from "./core/word-detector";
 import { DICTIONARY_SIZE }  from "./core/word-detector";
+import { WordStore } from "./storage/word-store";
+import { StartupScanner } from "./core/startup-scanner";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -29,13 +31,37 @@ const TEST_MODE   = process.env.TEST_MODE !== "false"; // default «on» in dev
 
 // ────────────────  Instantiate domain objects  ────────────────────────────
 const store     = await FirestoreChunkStore.create();
-const monkey    = new Monkey(store);
+const monkey    = new Monkey(store, store.cursor);
 const detector  = new WordDetector();
-const hits: ReturnType<typeof detector["emit"]>[] = [];
+const wordStore = new WordStore();
+
+// Load persisted words on startup
+const hits = await wordStore.loadWords();
+console.log(`Loaded ${hits.length} persisted words`);
+
+// Scan for any missing words since last persistence
+const scanner = new StartupScanner(store);
+const lastPosition = wordStore.getLastPersistedPosition();
+const missingWords = await scanner.scanMissingWords(lastPosition);
+
+if (missingWords.length > 0) {
+  console.log(`Found ${missingWords.length} missing words during startup scan`);
+  hits.push(...missingWords);
+  
+  // Persist the missing words
+  for (const word of missingWords) {
+    await wordStore.addWord(word);
+  }
+  await wordStore.flush();
+}
 
 // Link generator → detector → broadcast
-monkey.on("tick", ({ ch }) => detector.push(ch));
-detector.on("word", hit => { hits.push(hit); io.emit("word", hit); });
+monkey.on("tick", ({ index, ch }) => detector.push(ch, index));
+detector.on("word", hit => { 
+  hits.push(hit); 
+  io.emit("word", hit); 
+  wordStore.addWord(hit).catch(console.error);
+});
 
 // ────────────────  Online‑user tracking  ──────────────────────────────────
 const sockets = new Set<Socket>();       // real connected clients
@@ -135,4 +161,10 @@ setInterval(async () => {
 http.listen(HTTP_PORT, () => {
   console.log(`🚀  HTTP ${HTTP_PORT}  WS path \"${WS_PATH}\"  REST root ${REST_ROOT}`);
   if (TEST_MODE) console.log("🔧  TEST_MODE enabled: mock users fluctuating 0–20");
+});
+
+process.on('SIGTERM', async () => {
+  await wordStore.close();
+  await store.close();
+  process.exit(0);
 });

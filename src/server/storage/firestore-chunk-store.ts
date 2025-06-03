@@ -9,6 +9,9 @@ import { CHUNK_SIZE, type ChunkStore } from "./chunk-store";
 /*      └─ …                                                      */
 /*    meta/                                                       */
 /*      ├─ cursor          { index: 0 }                           */
+/*    words/
+/*      ├─ word_123_3      { start: 123, len:3, word: "cat", timestamp: ... }
+/*      └─…
 /*  Only COMPLETED chunks are stored; the hot buffer lives in RAM */
 /* ────────────────────────────────────────────────────────────── */
 
@@ -16,13 +19,13 @@ const CHUNKS = "chunks";
 const META = "meta";
 const CURSOR = "cursor";
 /** How often (ms) to persist the cursor to Firestore. */
-const CURSOR_UPDATE_INTERVAL = 5_000; // 5 s
+const CURSOR_UPDATE_INTERVAL = 2_000; // 1 s
 
-/** Tiny (256‑entry) LRU cache so repeated reads stay local & fast. */
+/** Tiny (32‑entry) LRU cache so repeated reads stay local & fast. */
 class LRUCache {
   private map = new Map<number, string>();
   private max;
-  constructor(max: number = 256) {this.max = max}
+  constructor(max: number = 32) {this.max = max}
 
   get(id: number) {
     return this.map.get(id);
@@ -82,7 +85,7 @@ export class FirestoreChunkStore implements ChunkStore {
 
     if (wipChunk.exists) {
       self.workingChunk = wipChunk.data()!.text as string;
- 
+
       // If the chunk was already full we “roll forward” so the next
       // write starts a new one.
       if (self.workingChunk.length === CHUNK_SIZE) {
