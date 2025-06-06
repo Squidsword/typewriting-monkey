@@ -1,5 +1,6 @@
 import { db } from "./firebase";
 import { CHUNK_SIZE, type ChunkStore } from "./chunk-store";
+import { storeLogger as logger, logError, logPerformance } from "../utils/logger";
 
 /* ────────────────────────────────────────────────────────────── */
 /*  Firestore collection layout                                   */
@@ -19,16 +20,31 @@ const CHUNKS = "chunks";
 const META = "meta";
 const CURSOR = "cursor";
 /** How often (ms) to persist the cursor to Firestore. */
-const CURSOR_UPDATE_INTERVAL = 2_000; // 1 s
+const CURSOR_UPDATE_INTERVAL = 2_000;
 
 /** Tiny (32‑entry) LRU cache so repeated reads stay local & fast. */
 class LRUCache {
   private map = new Map<number, string>();
   private max;
-  constructor(max: number = 32) {this.max = max}
+  private hits = 0;
+  private misses = 0;
+  private evictions = 0;
+
+  constructor(max: number = 32) {
+    this.max = max;
+    logger.debug({ maxSize: max }, 'LRU cache initialized');
+  }
 
   get(id: number) {
-    return this.map.get(id);
+    const text = this.map.get(id);
+    if (text) {
+      this.hits++;
+      logger.trace({ chunkId: id, hits: this.hits }, 'Cache hit');
+    } else {
+      this.misses++;
+      logger.trace({ chunkId: id, misses: this.misses }, 'Cache miss');
+    }
+    return text;
   }
 
   set(id: number, text: string) {
@@ -38,7 +54,24 @@ class LRUCache {
     if (this.map.size > this.max) {
       const oldest = this.map.keys().next().value as number;
       this.map.delete(oldest);
+      this.evictions++;
+      logger.debug({
+        evictedId: oldest,
+        totalEvictions: this.evictions,
+        cacheSize: this.map.size,
+      }, 'Cache eviction');
     }
+  }
+
+  getStats() {
+    const total = this.hits + this.misses;
+    return {
+      hits: this.hits,
+      misses: this.misses,
+      evictions: this.evictions,
+      hitRate: total > 0 ? (this.hits / total * 100).toFixed(2) + '%' : '0%',
+      size: this.map.size,
+    };
   }
 }
 
@@ -56,6 +89,11 @@ export class FirestoreChunkStore implements ChunkStore {
   /** Whether the in‑memory cursor differs from Firestore. */
   private cursorDirty = false;
   private readonly cursorTimer: NodeJS.Timeout;
+  
+  /** Statistics tracking */
+  private totalWrites = 0;
+  private totalReads = 0;
+  private lastStatsLog = Date.now();
 
   get cursor() {
     return this._cursor;
@@ -63,39 +101,64 @@ export class FirestoreChunkStore implements ChunkStore {
 
   /* ---------- factory: make sure we know where we left off ----- */
   constructor() {
-    // Kick off a background timer that flushes the cursor at a
-    // fixed cadence instead of on every single character.
+    // Kick off a background timer that flushes the cursor
     this.cursorTimer = setInterval(() => {
-      // Fire‑and‑forget – any error is logged but doesn’t kill the loop.
-      this.flushCursor().catch(console.error);
+      this.flushCursor().catch(err => logError(logger, err, { context: 'cursor-flush' }));
     }, CURSOR_UPDATE_INTERVAL);
+    
+    logger.info({
+      cursorUpdateInterval: CURSOR_UPDATE_INTERVAL,
+      cacheSize: 32,
+    }, 'FirestoreChunkStore constructed');
   }
 
   static async create(): Promise<FirestoreChunkStore> {
+    const startTime = Date.now();
     const self = new FirestoreChunkStore();
 
-    const snap = await db.collection(META).doc(CURSOR).get();
-    self._cursor = snap.exists ? (snap.data()!.index as number) : 0;
-    self.workingChunkId = Math.floor(self._cursor / CHUNK_SIZE);
+    try {
+      const snap = await db.collection(META).doc(CURSOR).get();
+      self._cursor = snap.exists ? (snap.data()!.index as number) : 0;
+      self.workingChunkId = Math.floor(self._cursor / CHUNK_SIZE);
 
-    const wipChunk = await db
-      .collection(CHUNKS)
-      .doc(`chunk_${self.workingChunkId}`)
-      .get();
+      logger.info({
+        cursor: self._cursor,
+        workingChunkId: self.workingChunkId,
+        cursorExists: snap.exists,
+      }, 'Loaded cursor from Firestore');
 
-    if (wipChunk.exists) {
-      self.workingChunk = wipChunk.data()!.text as string;
+      const wipChunk = await db
+        .collection(CHUNKS)
+        .doc(`chunk_${self.workingChunkId}`)
+        .get();
 
-      // If the chunk was already full we “roll forward” so the next
-      // write starts a new one.
-      if (self.workingChunk.length === CHUNK_SIZE) {
-        self.cache.set(self.workingChunkId, self.workingChunk);
-        self.workingChunkId += 1;
-        self.workingChunk = "";
+      if (wipChunk.exists) {
+        self.workingChunk = wipChunk.data()!.text as string;
+        
+        logger.info({
+          workingChunkId: self.workingChunkId,
+          workingChunkLength: self.workingChunk.length,
+        }, 'Loaded working chunk');
+
+        // If the chunk was already full we "roll forward"
+        if (self.workingChunk.length === CHUNK_SIZE) {
+          self.cache.set(self.workingChunkId, self.workingChunk);
+          self.workingChunkId += 1;
+          self.workingChunk = "";
+          logger.debug('Working chunk was full, rolled forward');
+        }
       }
-    }
 
-    return self;
+      logPerformance(logger, 'firestore-init', startTime, {
+        cursor: self._cursor,
+        workingChunkId: self.workingChunkId,
+      });
+
+      return self;
+    } catch (error) {
+      logError(logger, error, { context: 'firestore-init' });
+      throw error;
+    }
   }
 
   /* ---------- writes ------------------------------------------ */
@@ -104,76 +167,140 @@ export class FirestoreChunkStore implements ChunkStore {
   async append(ch: string): Promise<number> {
     const idx = this._cursor++;
     this.workingChunk += ch;
+    this.totalWrites++;
 
-    // Mark the cursor as dirty; the background timer will persist it.
+    // Mark the cursor as dirty
     this.cursorDirty = true;
 
-    if (this.workingChunk.length === CHUNK_SIZE) await this.flush();
+    logger.trace({
+      index: idx,
+      char: ch,
+      workingChunkLength: this.workingChunk.length,
+    }, 'Character appended');
+
+    if (this.workingChunk.length === CHUNK_SIZE) {
+      await this.flush();
+    }
+    
+    this.logStatsIfNeeded();
     return idx;
   }
 
   /** Persist the current cursor and working chunk */
   private async flushCursor(): Promise<void> {
-    if (!this.cursorDirty) return; // nothing to do
+    if (!this.cursorDirty) return;
 
-    const batch = db.batch();
+    try {
+      const batch = db.batch();
 
-    const chunkRef = db
-      .collection(CHUNKS)
-      .doc(`chunk_${this.workingChunkId}`);
+      const chunkRef = db
+        .collection(CHUNKS)
+        .doc(`chunk_${this.workingChunkId}`);
 
-    batch.set(chunkRef, { text: this.workingChunk });
+      batch.set(chunkRef, { text: this.workingChunk });
 
-    const cursorRef = db
-      .collection(META)
-      .doc(CURSOR);
+      const cursorRef = db
+        .collection(META)
+        .doc(CURSOR); 
 
-    batch.set(cursorRef, { index: this._cursor})
+      batch.set(cursorRef, { index: this._cursor });
 
-    await batch.commit();
+      await batch.commit();
 
-    this.cursorDirty = false;
+      this.cursorDirty = false;
+      
+    } catch (error) {
+      logError(logger, error, { 
+        context: 'cursor-flush',
+        cursor: this._cursor,
+        workingChunkId: this.workingChunkId,
+      });
+      throw error;
+    }
   }
 
-  /** Flush when a chunk fills up – this writes both chunk & cursor. */
+  /** Flush when a chunk fills up */
   async flush(): Promise<void> {
-    if (this.workingChunk.length !== CHUNK_SIZE) return; // still building
+    if (this.workingChunk.length !== CHUNK_SIZE) return;
 
+    const startTime = Date.now();
     const id = this.workingChunkId;
-    const ref = db.collection(CHUNKS).doc(`chunk_${id}`);
-    const cur = db.collection(META).doc(CURSOR);
+    
+    try {
+      logger.info({
+        chunkId: id,
+        size: this.workingChunk.length,
+      }, 'Flushing full chunk');
 
-    const batch = db.batch();
-    batch.set(ref, { text: this.workingChunk });
-    batch.set(cur, { index: this._cursor }, { merge: true });
+      const ref = db.collection(CHUNKS).doc(`chunk_${id}`);
+      const cur = db.collection(META).doc(CURSOR);
 
-    await batch.commit();
+      const batch = db.batch();
+      batch.set(ref, { text: this.workingChunk });
+      batch.set(cur, { index: this._cursor }, { merge: true });
 
-    // After a successful commit the cursor is now in‑sync.
-    this.cursorDirty = false;
-    this.cache.set(id, this.workingChunk); // warm cache for recent chunk
+      await batch.commit();
 
-    this.workingChunkId += 1;
-    this.workingChunk = "";
+      // After successful commit
+      this.cursorDirty = false;
+      this.cache.set(id, this.workingChunk);
+
+      this.workingChunkId += 1;
+      this.workingChunk = "";
+      
+      logPerformance(logger, 'chunk-flush', startTime, {
+        chunkId: id,
+      });
+    } catch (error) {
+      logError(logger, error, {
+        context: 'chunk-flush',
+        chunkId: id,
+      });
+      throw error;
+    }
   }
 
   /* ---------- reads ------------------------------------------- */
 
-  /** Get the FULL text of chunk `id` (awaits Firestore on cache miss). */
+  /** Get the FULL text of chunk `id` */
   async readChunk(id: number): Promise<string> {
-    if (id === this.workingChunkId) return this.workingChunk; // hot buffer
+    this.totalReads++;
+    
+    if (id === this.workingChunkId) {
+      logger.trace({ chunkId: id }, 'Reading working chunk');
+      return this.workingChunk;
+    }
 
     const cached = this.cache.get(id);
     if (cached !== undefined) return cached;
 
-    // Not cached → fetch from Firestore (≈ 20 reads/s free quota)
-    const snap = await db.collection(CHUNKS).doc(`chunk_${id}`).get();
-    const text = snap.exists ? (snap.data()!.text as string) : "";
-    this.cache.set(id, text);
-    return text;
+    // Not cached → fetch from Firestore
+    const startTime = Date.now();
+    try {
+      logger.debug({ chunkId: id }, 'Fetching chunk from Firestore');
+      
+      const snap = await db.collection(CHUNKS).doc(`chunk_${id}`).get();
+      const text = snap.exists ? (snap.data()!.text as string) : "";
+      
+      this.cache.set(id, text);
+      
+      logPerformance(logger, 'chunk-read', startTime, {
+        chunkId: id,
+        size: text.length,
+        exists: snap.exists,
+      });
+      
+      return text;
+    } catch (error) {
+      logError(logger, error, {
+        context: 'chunk-read',
+        chunkId: id,
+      });
+      throw error;
+    }
   }
 
-  /** Arbitrary slice. Max 17 chunks because len ≤ 8 KiB × 16. */
+  /** Arbitrary slice */
   async readSlice(start: number, len: number): Promise<string> {
     if (len <= 0) return "";
 
@@ -186,18 +313,42 @@ export class FirestoreChunkStore implements ChunkStore {
     }
 
     const offset = start - first * CHUNK_SIZE;
-    return blob.slice(offset, offset + len);
+    const result = blob.slice(offset, offset + len);
+    
+    return result;
   }
 
   chunkCount() {
     return this.workingChunkId + (this.workingChunk.length ? 1 : 0);
   }
 
-  /* ---------- cleanup ----------------------------------------- */
+  /* ---------- Utilities --------------------------------------- */
+  
+  private logStatsIfNeeded() {
+    if (Date.now() - this.lastStatsLog > 60_000) {
+      logger.info({
+        cursor: this._cursor,
+        chunks: this.chunkCount(),
+        workingChunkId: this.workingChunkId,
+        workingChunkLength: this.workingChunk.length,
+        totalWrites: this.totalWrites,
+        totalReads: this.totalReads,
+        cache: this.cache.getStats(),
+      }, 'Store statistics');
+      
+      this.lastStatsLog = Date.now();
+    }
+  }
 
-  /** Optional – call when your process exits to avoid dangling timers. */
+  /* ---------- Cleanup ----------------------------------------- */
+
   async close(): Promise<void> {
+    logger.info('Closing FirestoreChunkStore');
     clearInterval(this.cursorTimer);
-    await this.flushCursor(); // persist any last‑minute updates
+    await this.flushCursor();
+    logger.info({
+      finalCursor: this._cursor,
+      finalChunks: this.chunkCount(),
+    }, 'FirestoreChunkStore closed');
   }
 }

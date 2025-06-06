@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "dev:client": "vite",
-    "dev:server": "tsx watch --tsconfig tsconfig.server.json src/server/app.ts",
+    "dev:server": "tsx watch --tsconfig tsconfig.server.json src/server/app.ts | pino-pretty",
     "dev:export": "nodemon --watch src --watch . --ignore node_modules --ignore dist --ignore all_files_dump.txt --ext ts,tsx,js,jsx,json,md,html,css --exec \"node scripts/export.cjs\"",
     "dev": "concurrently -n client,server,export -c magenta,cyan,gray \"npm:dev:client\" \"npm:dev:server\" \"npm:dev:export\"",
     "build:client": "vite build",
@@ -30,6 +30,8 @@
     "firebase": "^11.8.1",
     "firebase-admin": "^13.4.0",
     "helmet": "^8.1.0",
+    "pino": "^9.6.0",
+    "pino-http": "^10.4.0",
     "pure-rand": "^7.0.1",
     "react-dom": "^19.1.0",
     "socket.io": "^4.8.1",
@@ -46,6 +48,7 @@
     "concurrently": "^9.1.2",
     "minimatch": "^10.0.1",
     "nodemon": "^3.1.10",
+    "pino-pretty": "^13.0.0",
     "tsx": "^4.19.4",
     "typescript": "^5.8.3",
     "vite": "^5.0.0"
